@@ -137,6 +137,34 @@ def fetch_all() -> dict:
         GROUP BY upc.pharmacy_level ORDER BY upc.pharmacy_level
     """)
 
+    print("  upgrades …")
+    upgrade_dist = psql(f"""
+        WITH avail AS (
+          SELECT pu.id,
+                 CASE WHEN COALESCE((
+                   SELECT upc2.is_open FROM user_pharmacy_connection upc2
+                   WHERE upc2.pharmacy_user_id = pu.id AND upc2.pharmacy_id = 13 LIMIT 1
+                 ), false) THEN 24 ELSE 12 END AS total_avail
+          FROM pharmacy_users pu WHERE {REAL}
+        ),
+        bought AS (
+          SELECT puc.pharmacy_user_id, COUNT(*) AS n
+          FROM pharmacy_upgrade_connection puc
+          JOIN pharmacy_users pu ON pu.id = puc.pharmacy_user_id
+          WHERE {REAL}
+          GROUP BY puc.pharmacy_user_id
+        )
+        SELECT
+          COUNT(CASE WHEN COALESCE(b.n,0) = 0                              THEN 1 END) AS pct_0,
+          COUNT(CASE WHEN COALESCE(b.n,0)::numeric/a.total_avail BETWEEN 0.01 AND 0.25 THEN 1 END) AS pct_1_25,
+          COUNT(CASE WHEN COALESCE(b.n,0)::numeric/a.total_avail BETWEEN 0.26 AND 0.50 THEN 1 END) AS pct_26_50,
+          COUNT(CASE WHEN COALESCE(b.n,0)::numeric/a.total_avail BETWEEN 0.51 AND 0.75 THEN 1 END) AS pct_51_75,
+          COUNT(CASE WHEN COALESCE(b.n,0)::numeric/a.total_avail BETWEEN 0.76 AND 0.99 THEN 1 END) AS pct_76_99,
+          COUNT(CASE WHEN COALESCE(b.n,0) >= a.total_avail                THEN 1 END) AS pct_100
+        FROM avail a
+        LEFT JOIN bought b ON b.pharmacy_user_id = a.id
+    """)[0]
+
     print("  game plays …")
     game_plays_row = psql(f"""
         WITH task_earned AS (
@@ -176,6 +204,7 @@ def fetch_all() -> dict:
         avatars          = avatars,
         pharmacy_names   = pharmacy_names,
         pharmacy_levels  = pharmacy_levels,
+        upgrade_dist     = {k: int(v or 0) for k,v in upgrade_dist.items()},
         game_plays_ph1   = int(game_plays_row["ph1_plays"] or 0),
         game_plays_ph2_coins = int(game_plays_row["ph2_game_coins"] or 0),
     )
@@ -301,6 +330,11 @@ tr:hover td{background:var(--card2)}
     <div class="ch sm"><canvas id="cLvl"></canvas></div>
   </div>
   <div class="card">
+    <h2>🛒 Апгрейды: сколько купили</h2>
+    <div class="ch sm"><canvas id="cUpg"></canvas></div>
+    <div class="leg" id="upgLeg"></div>
+  </div>
+  <div class="card">
     <h2>🌸 Названия аптек</h2>
     <div class="ch sm"><canvas id="cNames"></canvas></div>
   </div>
@@ -378,6 +412,22 @@ function funnel(id,rows,color){const tot=rows[0]?.assigned||1;
       scales:axes(true)}});}
 funnel('cF1',D.task_funnel.filter(r=>r.pharmacy_id===12),'#7c5cfc');
 funnel('cF2',D.task_funnel.filter(r=>r.pharmacy_id===13),'#3ec9a7');
+
+const UD=D.upgrade_dist;
+const udL=['0% (не покупали)','1–25%','26–50%','51–75%','76–99%','100% (все)'];
+const udV=[UD.pct_0,UD.pct_1_25,UD.pct_26_50,UD.pct_51_75,UD.pct_76_99,UD.pct_100];
+const udC=['#3d4166','#4a9eff','#7c5cfc','#e879a0','#f5a623','#3ec9a7'];
+const udT=udV.reduce((a,b)=>a+b,0);
+new Chart($('cUpg'),{type:'doughnut',data:{labels:udL,
+  datasets:[{data:udV,backgroundColor:udC,borderWidth:0,hoverOffset:5}]},
+  options:{responsive:true,maintainAspectRatio:false,cutout:'62%',
+    plugins:{legend:{display:false},tooltip:{...tip,
+      callbacks:{label:c=>' '+fmt(c.parsed)+' чел. ('+Math.round(c.parsed/udT*100)+'%)'}}}
+  }});
+const upgLeg=$('upgLeg');
+udL.forEach((l,i)=>{const p=Math.round(udV[i]/udT*100);
+  upgLeg.innerHTML+=`<div class="leg-item"><div class="leg-dot" style="background:${udC[i]}"></div>
+    <span>${l}</span><span class="leg-pct">${fmt(udV[i])} — ${p}%</span></div>`;});
 
 new Chart($('cLvl'),{type:'bar',data:{
   labels:D.pharmacy_levels.map(r=>'Уровень '+r.pharmacy_level),
