@@ -25,73 +25,84 @@ DB_PASS  = os.getenv("DB_PASSWORD", "Visual101")
 
 
 def psql(sql: str) -> list[dict]:
-    """Run SQL on the remote server via SSH + psql, return list of dicts."""
-    # one-liner: psql outputs JSON array via json_agg
+    """Run SQL on the remote server via SSH + psql (stdin), return list of dicts."""
     wrapped = f"SELECT json_agg(t) FROM ({sql.strip().rstrip(';')}) t"
     cmd = [
         "sshpass", "-p", SSH_PASS,
         "ssh", "-o", "StrictHostKeyChecking=no",
         f"{SSH_USER}@{SSH_HOST}",
-        f"PGPASSWORD={DB_PASS} psql -h localhost -U {DB_USER} -d {DB_NAME} -t -A -c \"{wrapped}\""
+        f"PGPASSWORD={DB_PASS} psql -h localhost -U {DB_USER} -d {DB_NAME} -t -A"
     ]
-    out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
+    out = subprocess.check_output(cmd, input=wrapped, stderr=subprocess.DEVNULL, text=True).strip()
     if not out or out == "NULL":
         return []
     return json.loads(out)
 
 
+# Фильтр тестовых: числовой UID = ручная/тестовая регистрация
+REAL = "pu.uid !~ '^[0-9]+$'"
+
+
 def fetch_all() -> dict:
     print("  users …")
-    total_users = psql("SELECT COUNT(*) AS n FROM pharmacy_users")[0]["n"]
+    total_users = psql(f"""
+        SELECT COUNT(*) AS n FROM pharmacy_users pu WHERE {REAL}
+    """)[0]["n"]
 
     print("  active …")
-    active_users = psql("""
-        SELECT COUNT(DISTINCT pharmacy_user_id) AS n
-        FROM task_pharmacy_connection WHERE is_complete=true
+    active_users = psql(f"""
+        SELECT COUNT(DISTINCT tpc.pharmacy_user_id) AS n
+        FROM task_pharmacy_connection tpc
+        JOIN pharmacy_users pu ON pu.id = tpc.pharmacy_user_id
+        WHERE tpc.is_complete=true AND {REAL}
     """)[0]["n"]
 
     print("  pharmacy2 …")
-    pharmacy2_opened = psql("""
-        SELECT COUNT(DISTINCT pharmacy_user_id) AS n
-        FROM user_pharmacy_connection WHERE pharmacy_id=13 AND is_open=true
+    pharmacy2_opened = psql(f"""
+        SELECT COUNT(DISTINCT upc.pharmacy_user_id) AS n
+        FROM user_pharmacy_connection upc
+        JOIN pharmacy_users pu ON pu.id = upc.pharmacy_user_id
+        WHERE upc.pharmacy_id=13 AND upc.is_open=true AND {REAL}
     """)[0]["n"]
 
     print("  coins …")
-    coins_stats = psql("""
+    coins_stats = psql(f"""
         SELECT MAX(total_coins) AS max_coins,
                ROUND(AVG(total_coins)) AS avg_coins,
                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_coins)::int AS median_coins
-        FROM pharmacy_users
+        FROM pharmacy_users pu WHERE {REAL}
     """)[0]
 
     print("  registrations …")
-    reg_by_month = psql("""
+    reg_by_month = psql(f"""
         SELECT TO_CHAR(created_at,'YYYY-MM') AS month, COUNT(*) AS count
-        FROM pharmacy_users GROUP BY month ORDER BY month
+        FROM pharmacy_users pu WHERE {REAL} GROUP BY month ORDER BY month
     """)
 
     print("  leaderboard …")
-    leaderboard = psql("""
+    leaderboard = psql(f"""
         SELECT ROW_NUMBER() OVER (ORDER BY total_coins DESC) AS place,
                name, pharmacy_name, total_coins, coins AS current_coins,
                avatar_id, created_at::date AS joined
-        FROM pharmacy_users WHERE total_coins>0
+        FROM pharmacy_users pu WHERE total_coins>0 AND {REAL}
         ORDER BY total_coins DESC LIMIT 20
     """)
 
     print("  task funnel …")
-    task_funnel = psql("""
+    task_funnel = psql(f"""
         SELECT tasks.title, tasks.pharmacy_id,
                COUNT(*) AS assigned,
                COUNT(CASE WHEN tpc.is_complete THEN 1 END) AS completed
         FROM task_pharmacy_connection tpc
         JOIN tasks ON tasks.id=tpc.task_id
+        JOIN pharmacy_users pu ON pu.id=tpc.pharmacy_user_id
+        WHERE {REAL}
         GROUP BY tasks.id, tasks.title, tasks.pharmacy_id
         ORDER BY tasks.pharmacy_id, tasks.id
     """)
 
     print("  progress dist …")
-    progress_dist = psql("""
+    progress_dist = psql(f"""
         SELECT COUNT(CASE WHEN td=0 THEN 1 END) AS no_tasks,
                COUNT(CASE WHEN td BETWEEN 1 AND 4  THEN 1 END) AS low,
                COUNT(CASE WHEN td BETWEEN 5 AND 14 THEN 1 END) AS mid,
@@ -101,26 +112,29 @@ def fetch_all() -> dict:
                      COUNT(CASE WHEN tpc.is_complete THEN 1 END) AS td
               FROM pharmacy_users pu
               LEFT JOIN task_pharmacy_connection tpc ON tpc.pharmacy_user_id=pu.id
+              WHERE {REAL}
               GROUP BY pu.id) t
     """)[0]
 
     print("  avatars …")
-    avatars = psql("""
+    avatars = psql(f"""
         SELECT avatar_id, COUNT(*) AS count
-        FROM pharmacy_users GROUP BY avatar_id ORDER BY avatar_id
+        FROM pharmacy_users pu WHERE {REAL} GROUP BY avatar_id ORDER BY avatar_id
     """)
 
     print("  pharmacy names …")
-    pharmacy_names = psql("""
+    pharmacy_names = psql(f"""
         SELECT pharmacy_name, COUNT(*) AS count
-        FROM pharmacy_users GROUP BY pharmacy_name ORDER BY count DESC LIMIT 15
+        FROM pharmacy_users pu WHERE {REAL} GROUP BY pharmacy_name ORDER BY count DESC LIMIT 15
     """)
 
     print("  levels …")
-    pharmacy_levels = psql("""
-        SELECT pharmacy_level, COUNT(DISTINCT pharmacy_user_id) AS users
-        FROM user_pharmacy_connection WHERE pharmacy_id=12
-        GROUP BY pharmacy_level ORDER BY pharmacy_level
+    pharmacy_levels = psql(f"""
+        SELECT upc.pharmacy_level, COUNT(DISTINCT upc.pharmacy_user_id) AS users
+        FROM user_pharmacy_connection upc
+        JOIN pharmacy_users pu ON pu.id=upc.pharmacy_user_id
+        WHERE upc.pharmacy_id=12 AND {REAL}
+        GROUP BY upc.pharmacy_level ORDER BY upc.pharmacy_level
     """)
 
     return dict(
