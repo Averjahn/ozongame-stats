@@ -3,7 +3,7 @@ name: Update Stats
 on:
   schedule:
     - cron: '0 4 * * *'   # каждый день в 04:00 UTC
-  workflow_dispatch:        # ручной запуск из GitHub UI
+  workflow_dispatch:        # ручной запуск из GitHub UI (Actions → Run workflow)
 
 jobs:
   generate:
@@ -15,29 +15,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Python deps
-        run: pip install psycopg2-binary
-
-      - name: Open SSH tunnel to DB
-        run: |
-          mkdir -p ~/.ssh
-          echo "StrictHostKeyChecking no" >> ~/.ssh/config
-          # Туннель: localhost:5433 → server:5432
-          sshpass -p "${{ secrets.SSH_PASSWORD }}" \
-            ssh -f -N -L 5433:localhost:5432 \
-            webadmin@edudev.med-game.ru
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        # sshpass уже есть на ubuntu-latest
+      - name: Install sshpass
+        run: sudo apt-get install -y sshpass
 
       - name: Generate index.html
         run: |
-          DB_HOST=127.0.0.1 \
-          DB_PORT=5433 \
-          DB_NAME=medtest2 \
-          DB_USER=goadmin \
+          SSH_PASSWORD=${{ secrets.SSH_PASSWORD }} \
           DB_PASSWORD=${{ secrets.DB_PASSWORD }} \
-          python generate.py --output index.html
+          python3 generate.py --output index.html
 
       - name: Commit & push
         run: |
@@ -45,5 +30,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add index.html
           git diff --cached --quiet || \
-            git commit -m "stats: auto-update $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git commit -m "stats: $(date -u '+%Y-%m-%d %H:%M UTC')"
           git push
