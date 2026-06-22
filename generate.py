@@ -137,6 +137,32 @@ def fetch_all() -> dict:
         GROUP BY upc.pharmacy_level ORDER BY upc.pharmacy_level
     """)
 
+    print("  game plays …")
+    game_plays_row = psql(f"""
+        WITH task_earned AS (
+          SELECT tpc.pharmacy_user_id,
+                 SUM((tr.params->>'coins')::int) AS coins
+          FROM task_pharmacy_connection tpc
+          JOIN task_rewards tr ON tr.task_id = tpc.task_id
+          WHERE tpc.is_complete = true AND tr.params->>'coins' IS NOT NULL
+          GROUP BY tpc.pharmacy_user_id
+        )
+        SELECT
+          SUM(pu.total_coins - COALESCE(te.coins, 0))
+            FILTER (WHERE NOT COALESCE((
+              SELECT upc2.is_open FROM user_pharmacy_connection upc2
+              WHERE upc2.pharmacy_user_id = pu.id AND upc2.pharmacy_id = 13 LIMIT 1
+            ), false)) AS ph1_plays,
+          SUM(pu.total_coins - COALESCE(te.coins, 0))
+            FILTER (WHERE COALESCE((
+              SELECT upc2.is_open FROM user_pharmacy_connection upc2
+              WHERE upc2.pharmacy_user_id = pu.id AND upc2.pharmacy_id = 13 LIMIT 1
+            ), false)) AS ph2_game_coins
+        FROM pharmacy_users pu
+        LEFT JOIN task_earned te ON te.pharmacy_user_id = pu.id
+        WHERE {REAL}
+    """)[0]
+
     return dict(
         generated_at     = datetime.utcnow().strftime("%d.%m.%Y %H:%M UTC"),
         total_users      = int(total_users),
@@ -150,6 +176,8 @@ def fetch_all() -> dict:
         avatars          = avatars,
         pharmacy_names   = pharmacy_names,
         pharmacy_levels  = pharmacy_levels,
+        game_plays_ph1   = int(game_plays_row["ph1_plays"] or 0),
+        game_plays_ph2_coins = int(game_plays_row["ph2_game_coins"] or 0),
     )
 
 
@@ -185,6 +213,7 @@ main{max-width:1280px;margin:0 auto;padding:24px}
 .kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
 .kpi.a::before{background:var(--accent)}.kpi.b::before{background:var(--accent2)}
 .kpi.c::before{background:var(--accent3)}.kpi.d::before{background:var(--red)}
+.kpi.e::before{background:#e879a0}
 .kpi-label{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px}
 .kpi-value{font-size:2rem;font-weight:700;line-height:1}
 .kpi-sub{color:var(--muted);font-size:.78rem;margin-top:5px}
@@ -238,6 +267,9 @@ tr:hover td{background:var(--card2)}
   <div class="kpi d"><div class="kpi-label">Макс. монет</div>
     <div class="kpi-value" id="k4">—</div>
     <div class="kpi-sub">среднее <span id="k5">—</span></div></div>
+  <div class="kpi e"><div class="kpi-label">Запуски игр ×1 монета</div>
+    <div class="kpi-value" id="k6">—</div>
+    <div class="kpi-sub" id="k6sub">—</div></div>
 </div>
 
 <div class="row2">
@@ -302,6 +334,8 @@ $('k2').textContent=fmt(D.active_users);
 $('k3').textContent=fmt(D.pharmacy2_opened);
 $('k4').textContent=fmt(D.coins_stats.max_coins);
 $('k5').textContent=fmt(D.coins_stats.avg_coins);
+$('k6').textContent='≥ '+fmt(D.game_plays_ph1);
+$('k6sub').textContent='точно для аптеки 1 · ещё '+fmt(D.game_plays_ph2_coins)+' монет у игроков аптеки 2';
 
 function axes(s){return{
   x:{grid:{color:GC},ticks:{color:TC,font:{size:11}},stacked:!!s},
