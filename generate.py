@@ -39,8 +39,8 @@ def psql(sql: str) -> list[dict]:
     return json.loads(out)
 
 
-# Фильтр тестовых: числовой UID = ручная/тестовая регистрация
-REAL = "pu.uid !~ '^[0-9]+$'"
+# Фильтр тестовых: числовой UID или известные тест-аккаунты
+REAL = "pu.uid !~ '^[0-9]+$' AND pu.uid NOT IN ('153211ttttt')"
 
 
 def fetch_all() -> dict:
