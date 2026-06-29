@@ -151,7 +151,7 @@ def fetch_all() -> dict:
           SELECT puc.pharmacy_user_id, COUNT(*) AS n
           FROM pharmacy_upgrade_connection puc
           JOIN pharmacy_users pu ON pu.id = puc.pharmacy_user_id
-          WHERE {REAL}
+          WHERE puc.is_purchased = true AND {REAL}
           GROUP BY puc.pharmacy_user_id
         )
         SELECT
