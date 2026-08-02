@@ -146,6 +146,21 @@ def fetch_all() -> dict:
         FROM pharmacy_users pu WHERE {REAL} GROUP BY month ORDER BY month
     """)
 
+    # Сырой список пользователей по месяцам — заказчик явно попросил «показывай
+    # uid по месяцам, чтобы я посмотрел что это за N пользователей», чтобы
+    # вручную проверить регистрации, оставшиеся после REAL-фильтра (см. выше:
+    # автоматически полностью отличить тестировщика, зашедшего под своим
+    # настоящим pharmskills-аккаунтом, от обычного клиента — нельзя, поэтому
+    # нужен способ смотреть глазами). uid НЕ обрезаем — заказчику важно видеть
+    # именно его, чтобы сверять с тем, что видно в самом pharmskills.
+    print("  users raw (for manual review) …")
+    users_raw = psql(f"""
+        SELECT TO_CHAR(created_at,'YYYY-MM') AS month, name, pharmacy_name, uid,
+               created_at::date AS joined
+        FROM pharmacy_users pu WHERE {REAL}
+        ORDER BY created_at DESC
+    """)
+
     # Вовлечённость по месяцам — заказчик прямо попросил «сколько пользователей
     # за месяц, сколько заданий прошли», отдельно от reg_by_month (та считает
     # только НОВЫЕ регистрации, а тут — сколько людей были активны в конкретном
@@ -287,6 +302,7 @@ def fetch_all() -> dict:
         coins_stats      = {k: int(v or 0) for k,v in coins_stats.items()},
         reg_by_month     = reg_by_month,
         monthly_engagement = monthly_engagement,
+        users_raw        = users_raw,
         leaderboard      = leaderboard,
         task_funnel      = task_funnel,
         progress_dist    = progress_dist,
