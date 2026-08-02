@@ -13,8 +13,20 @@ Env vars:
   DB_PASSWORD   default: Visual101
 """
 
-import os, sys, json, argparse, subprocess, textwrap
+import os, sys, json, argparse, subprocess, textwrap, ssl, urllib.request
 from datetime import datetime
+
+# Локальный Python (особенно на macOS из python.org, не системный) часто не
+# видит системную цепочку сертификатов — urlopen на https падает с
+# CERTIFICATE_VERIFY_FAILED. certifi — стандартный способ починить это без
+# ослабления проверки; если пакета нет (например, минимальный образ CI),
+# тихо остаёмся на дефолтном контексте (в GitHub Actions runner'ах обычно
+# всё ок из коробки).
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CTX = None
 
 SSH_HOST = os.getenv("SSH_HOST", "edudev.med-game.ru")
 SSH_USER = os.getenv("SSH_USER", "webadmin")
@@ -22,6 +34,31 @@ SSH_PASS = os.getenv("SSH_PASSWORD", "MedSite128")
 DB_NAME  = os.getenv("DB_NAME",  "medtest2")
 DB_USER  = os.getenv("DB_USER",  "goadmin")
 DB_PASS  = os.getenv("DB_PASSWORD", "Visual101")
+
+# Второй источник данных — НЕ прод-БД (medtest2 выше), а отдельный лёгкий
+# сервис (Fastify+SQLite на VPS заказчика, см. myProjects/ozongame-stats),
+# который считает то, чего в прод-БД просто нет: запуски мини-игр, их
+# длительность, ОБЩЕЕ время в приложении (не в мини-играх) и снимки «сколько
+# аптек открыто» (клиентский трекер, отдельная выборка от честного SQL по
+# user_pharmacy_connection выше — поэтому подписан отдельно, не подменяет
+# pharmacy2_opened). CORS на сервисе открыт всем, обычный HTTPS GET.
+GAME_STATS_URL = os.getenv("GAME_STATS_URL", "https://ozonstats.80-242-61-200.sslip.io")
+
+
+def fetch_json(url: str, timeout=15):
+    with urllib.request.urlopen(url, timeout=timeout, context=_SSL_CTX) as r:
+        return json.loads(r.read().decode())
+
+
+def fetch_game_stats() -> dict:
+    print("  mini-game stats (ozonstats service) …")
+    try:
+        summary = fetch_json(f"{GAME_STATS_URL}/api/stats/summary")
+        daily = fetch_json(f"{GAME_STATS_URL}/api/stats/daily")
+        return {"summary": summary, "daily": daily.get("items", [])}
+    except Exception as e:
+        print(f"    WARN: не удалось получить статистику мини-игр: {e}")
+        return None
 
 
 def psql(sql: str) -> list[dict]:
@@ -165,6 +202,8 @@ def fetch_all() -> dict:
         LEFT JOIN bought b ON b.pharmacy_user_id = a.id
     """)[0]
 
+    game_stats = fetch_game_stats()
+
     print("  game plays …")
     game_plays_row = psql(f"""
         WITH task_earned AS (
@@ -207,6 +246,7 @@ def fetch_all() -> dict:
         upgrade_dist     = {k: int(v or 0) for k,v in upgrade_dist.items()},
         game_plays_ph1   = int(game_plays_row["ph1_plays"] or 0),
         game_plays_ph2_coins = int(game_plays_row["ph2_game_coins"] or 0),
+        game_stats       = game_stats,
     )
 
 
@@ -301,6 +341,32 @@ tr:hover td{background:var(--card2)}
     <div class="kpi-sub" id="k6sub">—</div></div>
 </div>
 
+<div class="kpi-row" id="gsKpiRow" style="display:none">
+  <div class="kpi a"><div class="kpi-label">Ср. время в игре (в целом)</div>
+    <div class="kpi-value" id="g1">—</div>
+    <div class="kpi-sub">карта города + аптека, не мини-игры</div></div>
+  <div class="kpi b"><div class="kpi-label">Ср. сессия мини-игры</div>
+    <div class="kpi-value" id="g2">—</div>
+    <div class="kpi-sub" id="g2sub">—</div></div>
+  <div class="kpi c"><div class="kpi-label">Запусков мини-игр</div>
+    <div class="kpi-value" id="g3">—</div>
+    <div class="kpi-sub" id="g3sub">—</div></div>
+  <div class="kpi e"><div class="kpi-label">Игр в ротации</div>
+    <div class="kpi-value" id="g4">—</div>
+    <div class="kpi-sub">по трекеру запусков</div></div>
+</div>
+
+<div class="row2" id="gsRow2" style="display:none">
+  <div class="card">
+    <h2>🕹️ Мини-игры — запуски и игроки (трекер)</h2>
+    <div class="ch"><canvas id="cGames"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>📈 Запуски мини-игр по дням (трекер)</h2>
+    <div class="ch"><canvas id="cGamesDaily"></canvas></div>
+  </div>
+</div>
+
 <div class="row2">
   <div class="card">
     <h2>📅 Регистрации по месяцам</h2>
@@ -370,6 +436,54 @@ $('k4').textContent=fmt(D.coins_stats.max_coins);
 $('k5').textContent=fmt(D.coins_stats.avg_coins);
 $('k6').textContent='≥ '+fmt(D.game_plays_ph1);
 $('k6sub').textContent='точно для аптеки 1 · ещё '+fmt(D.game_plays_ph2_coins)+' монет у игроков аптеки 2';
+
+// Статистика с отдельного трекера мини-игр (не из прод-БД выше — там таких
+// событий просто нет): время в игре в целом, длительность мини-игр, запуски
+// по дням. Раздел скрыт, если сервис был недоступен на момент генерации.
+const GS=D.game_stats;
+function fmtDur(sec){
+  if(sec===null||sec===undefined) return '—';
+  if(sec<60) return sec.toFixed(1)+'с';
+  const m=Math.floor(sec/60),s=Math.round(sec%60);
+  return m+'м '+s+'с';
+}
+if(GS && GS.summary){
+  const S=GS.summary;
+  $('gsKpiRow').style.display='';
+  $('g1').textContent=fmtDur(S.app_session && S.app_session.avg_duration_sec);
+  $('g2').textContent=fmtDur(S.avg_session_duration_sec);
+  $('g2sub').textContent=fmt(S.total_sessions_recorded||0)+' сессий с длительностью';
+  $('g3').textContent=fmt(S.total_launches||0);
+  $('g3sub').textContent=fmt(S.total_unique_players||0)+' уник. игроков (по трекеру)';
+  $('g4').textContent=fmt((S.games||[]).length);
+
+  if((S.games||[]).length){
+    $('gsRow2').style.display='';
+    const games=[...S.games].sort((a,b)=>b.launches-a.launches);
+    new Chart($('cGames'),{type:'bar',data:{
+      labels:games.map(g=>g.game_name),
+      datasets:[{data:games.map(g=>g.launches),
+        backgroundColor:games.map((_,i)=>PAL[i%PAL.length]+'cc'),
+        borderRadius:5,borderSkipped:false}]},
+      options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',
+        plugins:{legend:{display:false},tooltip:{...tip,callbacks:{
+          label:c=>{const g=games[c.dataIndex];
+            return ' '+fmt(g.launches)+' запусков, '+fmt(g.unique_players)+' игроков, ср. '+fmtDur(g.avg_duration_sec);}}}},
+        scales:axes()}});
+
+    const byDay=new Map();
+    (GS.daily||[]).forEach(r=>byDay.set(r.day,(byDay.get(r.day)||0)+r.count));
+    const days=[...byDay.keys()].sort();
+    new Chart($('cGamesDaily'),{type:'line',data:{
+      labels:days,
+      datasets:[{data:days.map(d=>byDay.get(d)),
+        borderColor:'#7c5cfc',backgroundColor:'#7c5cfc33',fill:true,tension:.3,
+        pointBackgroundColor:'#7c5cfc',pointRadius:3}]},
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{display:false},tooltip:{...tip,callbacks:{label:c=>' '+fmt(c.parsed.y)+' запусков'}}},
+        scales:axes()}});
+  }
+}
 
 function axes(s){return{
   x:{grid:{color:GC},ticks:{color:TC,font:{size:11}},stacked:!!s},
