@@ -116,6 +116,25 @@ def fetch_all() -> dict:
         FROM pharmacy_users pu WHERE {REAL} GROUP BY month ORDER BY month
     """)
 
+    # Вовлечённость по месяцам — заказчик прямо попросил «сколько пользователей
+    # за месяц, сколько заданий прошли», отдельно от reg_by_month (та считает
+    # только НОВЫЕ регистрации, а тут — сколько людей были активны в конкретном
+    # месяце и сколько заданий закрыли, независимо от даты регистрации).
+    # updated_at у task_pharmacy_connection трогается ТОЛЬКО при апдейте записи
+    # (см. backend/.../task_pharmacy_connection.go: UPDATE ... updated_at=now()
+    # идёт вместе с is_complete), поэтому WHERE is_complete=true и группировка
+    # по месяцу updated_at даёт месяц реального прохождения, а не создания связи.
+    print("  monthly engagement …")
+    monthly_engagement = psql(f"""
+        SELECT TO_CHAR(tpc.updated_at,'YYYY-MM') AS month,
+               COUNT(DISTINCT tpc.pharmacy_user_id) AS active_users,
+               COUNT(*) AS tasks_completed
+        FROM task_pharmacy_connection tpc
+        JOIN pharmacy_users pu ON pu.id = tpc.pharmacy_user_id
+        WHERE tpc.is_complete = true AND {REAL}
+        GROUP BY month ORDER BY month
+    """)
+
     print("  leaderboard …")
     leaderboard = psql(f"""
         SELECT ROW_NUMBER() OVER (ORDER BY total_coins DESC) AS place,
@@ -237,6 +256,7 @@ def fetch_all() -> dict:
         pharmacy2_opened = int(pharmacy2_opened),
         coins_stats      = {k: int(v or 0) for k,v in coins_stats.items()},
         reg_by_month     = reg_by_month,
+        monthly_engagement = monthly_engagement,
         leaderboard      = leaderboard,
         task_funnel      = task_funnel,
         progress_dist    = progress_dist,
