@@ -344,7 +344,7 @@ tr:hover td{background:var(--card2)}
 <div class="kpi-row" id="gsKpiRow" style="display:none">
   <div class="kpi a"><div class="kpi-label">Ср. время в игре (в целом)</div>
     <div class="kpi-value" id="g1">—</div>
-    <div class="kpi-sub">карта города + аптека, не мини-игры</div></div>
+    <div class="kpi-sub" id="g1sub">карта города + аптека, не мини-игры</div></div>
   <div class="kpi b"><div class="kpi-label">Ср. сессия мини-игры</div>
     <div class="kpi-value" id="g2">—</div>
     <div class="kpi-sub" id="g2sub">—</div></div>
@@ -451,6 +451,11 @@ if(GS && GS.summary){
   const S=GS.summary;
   $('gsKpiRow').style.display='';
   $('g1').textContent=fmtDur(S.app_session && S.app_session.avg_duration_sec);
+  // Явно показываем размер выборки — при малом N среднее «в целом» может
+  // оказаться МЕНЬШЕ средней мини-игры (это не баг подсчёта, а мало данных),
+  // без счётчика это выглядит как логическая нестыковка.
+  {const n=(S.app_session&&S.app_session.sessions_recorded)||0;
+   $('g1sub').textContent='выборка: '+fmt(n)+(n<=2?' ⚠️ мало данных':' сессий приложения');}
   $('g2').textContent=fmtDur(S.avg_session_duration_sec);
   $('g2sub').textContent=fmt(S.total_sessions_recorded||0)+' сессий с длительностью';
   $('g3').textContent=fmt(S.total_launches||0);
